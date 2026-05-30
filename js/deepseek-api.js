@@ -27,7 +27,7 @@ export class DeepseekAPI {
         const userMessage = `Ситуация: ${scenarioDescription}\nВыбор ученика: ${playerChoice}`;
 
         const requestBody = {
-            model: 'deepseek-chat',
+            model: 'deepseek-v4-flash',
             messages: [
                 { role: 'system', content: this.config.systemPrompt },
                 { role: 'user', content: userMessage }
