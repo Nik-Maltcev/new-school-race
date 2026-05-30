@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Симуляция вождения</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+        }
+
+        #renderCanvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        #ui-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 10;
+        }
+
+        #ui-overlay.active {
+            pointer-events: auto;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="renderCanvas"></canvas>
+    <div id="ui-overlay"></div>
+
+    <!-- Babylon.js из CDN -->
+    <script src="https://cdn.babylonjs.com/babylon.js"></script>
+    <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
+
+    <!-- Модули игровой логики -->
+    <script type="module">
+        import { EventBus } from './js/event-bus.js';
+        import { Engine } from './js/engine.js';
+        import { DriverCamera } from './js/camera.js';
+        import { CarPhysics } from './js/car-physics.js';
+        import { InputManager } from './js/input-manager.js';
+        import { ModelLoader } from './js/model-loader.js';
+        import { ScenarioManager } from './js/scenario-manager.js';
+        import { UIOverlay } from './js/ui-overlay.js';
+        import { DeepseekAPI } from './js/deepseek-api.js';
+        import { PedestrianScenario } from './js/scenarios/pedestrian.js';
+
+        async function main() {
+            // Инициализация движка
+            const engine = new Engine('renderCanvas');
+            await engine.initialize();
+            const scene = engine.getScene();
+
+            // Инициализация модулей
+            const inputManager = new InputManager();
+            const carPhysics = new CarPhysics();
+            const camera = new DriverCamera(scene, { x: -0.3, y: 1.2, z: 0.5 });
+            const modelLoader = new ModelLoader(scene, './assets/models/', './assets/textures/');
+            const scenarioManager = new ScenarioManager(EventBus, scene);
+            const uiOverlay = new UIOverlay('ui-overlay', EventBus);
+            const deepseekAPI = new DeepseekAPI({ endpoint: '/api/evaluate', timeout: 30000 });
+
+            // Загрузка моделей
+            try {
+                await modelLoader.loadAll([
+                    { name: 'car', file: 'car.gltf' },
+                    { name: 'pedestrian', file: 'pedestrian.gltf' },
+                    { name: 'trafficLight', file: 'traffic-light.gltf' },
+                    { name: 'building', file: 'building.gltf' }
+                ], 30000);
+                EventBus.emit('models:loaded');
+            } catch (error) {
+                console.error('Ошибка загрузки моделей:', error.message);
+                return;
+            }
+
+            // Регистрация сценариев
+            scenarioManager.register(PedestrianScenario);
+
+            // Связывание событий
+            EventBus.on('trigger:entered', (data) => {
+                const scenario = scenarioManager.getActiveScenario();
+                if (scenario) {
+                    uiOverlay.showScenario(scenario.description, scenario.choices);
+                    inputManager.setBlocked(true);
+                    carPhysics.setInputBlocked(true);
+                }
+            });
+
+            EventBus.on('scenario:choiceMade', async (data) => {
+                uiOverlay.showLoading();
+                try {
+                    const scenario = scenarioManager.getActiveScenario();
+                    const response = await deepseekAPI.evaluate(scenario.description, scenario.choices[data.choiceIndex]);
+                    uiOverlay.showResponse(response);
+                    EventBus.emit('api:response', { text: response });
+                } catch (error) {
+                    uiOverlay.showError(error.message, true);
+                    EventBus.emit('api:error', { error: error.message, canRetry: true });
+                }
+            });
+
+            uiOverlay.onClose(() => {
+                const scenario = scenarioManager.getActiveScenario();
+                if (scenario) {
+                    scenarioManager.completeScenario(scenario.id);
+                }
+                uiOverlay.hide();
+                inputManager.setBlocked(false);
+                carPhysics.setInputBlocked(false);
+                EventBus.emit('input:unblocked');
+            });
+
+            uiOverlay.onRetry(async () => {
+                uiOverlay.showLoading();
+                try {
+                    const scenario = scenarioManager.getActiveScenario();
+                    const response = await deepseekAPI.evaluate(scenario.description, scenario.choices[0]);
+                    uiOverlay.showResponse(response);
+                } catch (error) {
+                    uiOverlay.showError('Сервис недоступен. Попробуйте позже.', false);
+                    const scenario = scenarioManager.getActiveScenario();
+                    if (scenario) {
+                        scenarioManager.completeScenario(scenario.id);
+                    }
+                    setTimeout(() => {
+                        uiOverlay.hide();
+                        inputManager.setBlocked(false);
+                        carPhysics.setInputBlocked(false);
+                    }, 3000);
+                }
+            });
+
+            // Обработка принудительной остановки автомобиля (из PedestrianScenario)
+            EventBus.on('car:forceStop', (data) => {
+                carPhysics.forceStop(data.duration);
+            });
+
+            // Игровой цикл
+            engine.registerUpdateCallback((deltaTime) => {
+                const input = inputManager.getInput();
+                carPhysics.update(deltaTime, input);
+
+                const carPosition = carPhysics.getPosition();
+                const carRotation = carPhysics.getRotation();
+
+                scenarioManager.update(carPhysics.getBoundingBox());
+                camera.update(carPosition, carRotation);
+            });
+
+            // Запуск
+            engine.start();
+        }
+
+        main().catch(console.error);
+    </script>
+</body>
+</html>

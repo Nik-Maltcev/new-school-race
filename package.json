@@ -1,0 +1,17 @@
+{
+  "name": "race-school",
+  "version": "1.0.0",
+  "description": "Браузерная симуляция вождения на Babylon.js",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "install-server": "cd server && npm install"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5"
+  }
+}
