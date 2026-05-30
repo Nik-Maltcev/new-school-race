@@ -44,6 +44,13 @@
 <body>
     <canvas id="renderCanvas"></canvas>
     <div id="ui-overlay"></div>
+    <div id="loading-screen" style="position:absolute;top:0;left:0;width:100%;height:100%;background:#1a1a2e;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:100;color:#fff;font-family:sans-serif;">
+        <h2 style="margin-bottom:20px;">Загрузка города...</h2>
+        <div style="width:300px;height:6px;background:#333;border-radius:3px;overflow:hidden;">
+            <div id="loading-bar" style="width:0%;height:100%;background:#4fc3f7;transition:width 0.3s;"></div>
+        </div>
+        <p id="loading-text" style="margin-top:12px;font-size:14px;color:#aaa;">Инициализация...</p>
+    </div>
 
     <!-- Babylon.js из CDN -->
     <script src="https://cdn.babylonjs.com/babylon.js"></script>
@@ -64,10 +71,23 @@
         import { CityGenerator } from './js/city-generator.js';
 
         async function main() {
+            const loadingBar = document.getElementById('loading-bar');
+            const loadingText = document.getElementById('loading-text');
+            const loadingScreen = document.getElementById('loading-screen');
+
+            function setProgress(percent, text) {
+                loadingBar.style.width = percent + '%';
+                loadingText.textContent = text;
+            }
+
+            setProgress(10, 'Инициализация движка...');
+
             // Инициализация движка
             const engine = new Engine('renderCanvas');
             await engine.initialize();
             const scene = engine.getScene();
+
+            setProgress(20, 'Создание модулей...');
 
             // Инициализация модулей
             const inputManager = new InputManager();
@@ -78,18 +98,42 @@
             const uiOverlay = new UIOverlay('ui-overlay', EventBus);
             const deepseekAPI = new DeepseekAPI({ endpoint: '/api/evaluate', timeout: 30000 });
 
+            setProgress(30, 'Генерация города...');
+
             // Процедурная генерация города (сетка улиц, рандомизация каждый запуск)
             const cityGenerator = new CityGenerator(scene, './assets/models/', './assets/textures/');
-            const cityInfo = await cityGenerator.generate({
-                gridSizeX: 8,
-                gridSizeZ: 12,
-                minBlockSize: 80,
-                maxBlockSize: 150,
-                trafficLightChance: 0.5,
-            });
-            console.log(`Город: ${cityInfo.intersectionCount} перекрёстков, ${cityInfo.roadCount} дорог, ${cityInfo.trafficLightCount} светофоров`);
+            let cityInfo;
+            try {
+                cityInfo = await cityGenerator.generate({
+                    gridSizeX: 4,
+                    gridSizeZ: 5,
+                    minBlockSize: 90,
+                    maxBlockSize: 140,
+                    trafficLightChance: 0.5,
+                });
+                console.log(`Город: ${cityInfo.intersectionCount} перекрёстков, ${cityInfo.roadCount} дорог, ${cityInfo.trafficLightCount} светофоров`);
+            } catch (error) {
+                console.error('Ошибка генерации города:', error);
+                // Fallback — минимальная сцена
+                const fallbackRoad = BABYLON.MeshBuilder.CreateGround('road', { width: 10, height: 500 }, scene);
+                const fallbackMat = new BABYLON.StandardMaterial('roadMat', scene);
+                fallbackMat.diffuseColor = new BABYLON.Color3(0.3, 0.3, 0.3);
+                fallbackRoad.material = fallbackMat;
+                scene.clearColor = new BABYLON.Color4(0.53, 0.81, 0.92, 1);
+                new BABYLON.HemisphericLight('light', new BABYLON.Vector3(0, 1, 0), scene);
+            }
+
+            setProgress(90, 'Финализация...');
 
             EventBus.emit('models:loaded');
+
+            // Скрытие экрана загрузки
+            setProgress(100, 'Готово!');
+            setTimeout(() => {
+                loadingScreen.style.opacity = '0';
+                loadingScreen.style.transition = 'opacity 0.5s';
+                setTimeout(() => loadingScreen.style.display = 'none', 500);
+            }, 300);
 
             // Регистрация сценариев
             scenarioManager.register(PedestrianScenario);

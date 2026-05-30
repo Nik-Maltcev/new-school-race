@@ -345,38 +345,31 @@ export class CityGenerator {
     }
 
     /**
-     * Дорожная разметка (полосы)
+     * Дорожная разметка (только центральная линия на длинных сегментах)
      */
     _placeRoadMarkings(roadWidth, lanes) {
+        // Только сплошные линии на краях дороги — минимум мешей
         for (const road of this._roads) {
-            // Пунктирная разделительная линия
-            const dashLength = 3;
-            const gapLength = 4;
-            const totalLength = road.length;
-            let pos = 5;
+            if (road.length < 50) continue; // Пропускаем короткие
 
-            while (pos < totalLength - 5) {
-                const dash = BABYLON.MeshBuilder.CreateGround(`dash_${road.from.id}_${pos}`, {
-                    width: road.direction === 'horizontal' ? dashLength : 0.12,
-                    height: road.direction === 'horizontal' ? 0.12 : dashLength
-                }, this._scene);
+            const line = BABYLON.MeshBuilder.CreateGround(`line_${road.from.id}`, {
+                width: road.direction === 'horizontal' ? road.length - 10 : 0.12,
+                height: road.direction === 'horizontal' ? 0.12 : road.length - 10
+            }, this._scene);
 
-                if (road.direction === 'horizontal') {
-                    dash.position.x = road.x1 + pos;
-                    dash.position.z = road.z;
-                } else {
-                    dash.position.x = road.x;
-                    dash.position.z = road.z1 + pos;
-                }
-                dash.position.y = 0.02;
-
-                const mat = new BABYLON.StandardMaterial(`dashMat_${pos}`, this._scene);
-                mat.diffuseColor = new BABYLON.Color3(0.95, 0.95, 0.95);
-                mat.emissiveColor = new BABYLON.Color3(0.1, 0.1, 0.1);
-                dash.material = mat;
-
-                pos += dashLength + gapLength;
+            if (road.direction === 'horizontal') {
+                line.position.x = (road.x1 + road.x2) / 2;
+                line.position.z = road.z;
+            } else {
+                line.position.x = road.x;
+                line.position.z = (road.z1 + road.z2) / 2;
             }
+            line.position.y = 0.02;
+
+            const mat = new BABYLON.StandardMaterial(`lineMat_${road.from.id}`, this._scene);
+            mat.diffuseColor = new BABYLON.Color3(0.9, 0.8, 0.1);
+            mat.emissiveColor = new BABYLON.Color3(0.15, 0.12, 0);
+            line.material = mat;
         }
     }
 
@@ -412,8 +405,8 @@ export class CityGenerator {
 
                 if (blockMaxX - blockMinX < 15 || blockMaxZ - blockMinZ < 15) continue;
 
-                // Размещаем 2-6 зданий в блоке
-                const buildingCount = this._randomInt(2, 5);
+                // Размещаем 1-3 здания в блоке
+                const buildingCount = this._randomInt(1, 3);
                 for (let b = 0; b < buildingCount; b++) {
                     const bType = Math.floor(this._random() * loadedBuildings.length);
                     const clone = loadedBuildings[bType].clone(`bld_${ix}_${iz}_${b}`);
