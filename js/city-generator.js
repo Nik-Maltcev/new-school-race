@@ -1,161 +1,395 @@
-// city-generator.js — Процедурная генерация города с поворотами, перекрёстками и светофорами
+// city-generator.js — Процедурная генерация города с сеткой улиц (grid-based)
+// Город как сетка перекрёстков, между ними — прямые участки дороги.
+// На перекрёстке можно свернуть влево/вправо/прямо.
 
 export class CityGenerator {
     constructor(scene, modelsPath, texturesPath) {
         this._scene = scene;
         this._modelsPath = modelsPath;
         this._texturesPath = texturesPath;
-        this._segments = [];
+        this._seed = Date.now() % 100000;
+        this._intersections = [];
+        this._roads = [];
         this._trafficLights = [];
         this._buildings = [];
-        this._seed = Math.random() * 10000;
     }
 
     /**
-     * Псевдослучайное число на основе seed (детерминированное для одной сессии)
+     * Псевдослучайное число (0..1)
      */
     _random() {
         this._seed = (this._seed * 9301 + 49297) % 233280;
         return this._seed / 233280;
     }
 
+    _randomRange(min, max) {
+        return min + this._random() * (max - min);
+    }
+
+    _randomInt(min, max) {
+        return Math.floor(this._randomRange(min, max + 1));
+    }
+
     /**
-     * Генерация города длиной totalLength метров
-     * @param {number} totalLength — общая длина маршрута (по умолчанию 10000)
-     * @param {object} options — настройки генерации
+     * Генерация города
+     * @param {object} options
+     * @param {number} options.gridSizeX — количество перекрёстков по X (по умолчанию 8)
+     * @param {number} options.gridSizeZ — количество перекрёстков по Z (по умолчанию 12)
+     * @param {number} options.blockSize — расстояние между перекрёстками (по умолчанию 80-150, рандом)
+     * @param {number} options.roadWidth — ширина дороги (по умолчанию 10)
+     * @param {number} options.lanes — количество полос в каждом направлении (по умолчанию 2)
      */
-    async generate(totalLength = 10000, options = {}) {
+    async generate(options = {}) {
         const {
+            gridSizeX = 8,
+            gridSizeZ = 12,
+            minBlockSize = 80,
+            maxBlockSize = 150,
             roadWidth = 10,
-            sidewalkWidth = 4,
-            buildingOffset = 15,
-            minSegmentLength = 80,
-            maxSegmentLength = 200,
-            turnChance = 0.25,
-            intersectionChance = 0.15,
-            trafficLightChance = 0.4,
+            lanes = 2,
+            trafficLightChance = 0.6,
         } = options;
 
-        const roadTexture = this._texturesPath + 'T_Concrete_Asphalt_BaseColor.png';
-        const sidewalkTexture = this._texturesPath + 'T_Concrete_BaseColor.png';
-
-        // Генерация сегментов дороги
-        let currentZ = 0;
-        let segmentIndex = 0;
-
-        while (currentZ < totalLength) {
-            const segLength = minSegmentLength + this._random() * (maxSegmentLength - minSegmentLength);
-            const actualLength = Math.min(segLength, totalLength - currentZ);
-
-            const segment = {
-                index: segmentIndex,
-                startZ: currentZ,
-                length: actualLength,
-                type: 'straight', // straight, intersection
-                hasTurn: false,
-                turnDirection: null,
-                hasTrafficLight: false,
-            };
-
-            // Решаем тип сегмента
-            if (segmentIndex > 0 && this._random() < intersectionChance) {
-                segment.type = 'intersection';
-                segment.hasTrafficLight = this._random() < trafficLightChance;
-            } else if (segmentIndex > 0 && this._random() < turnChance) {
-                segment.hasTurn = true;
-                segment.turnDirection = this._random() > 0.5 ? 'left' : 'right';
-            }
-
-            // Светофор на обычном сегменте (не перекрёсток)
-            if (segment.type === 'straight' && !segment.hasTrafficLight && this._random() < 0.2) {
-                segment.hasTrafficLight = true;
-            }
-
-            this._segments.push(segment);
-            currentZ += actualLength;
-            segmentIndex++;
+        // 1. Генерация сетки перекрёстков с рандомными расстояниями
+        const xPositions = [0];
+        for (let i = 1; i < gridSizeX; i++) {
+            xPositions.push(xPositions[i - 1] + this._randomRange(minBlockSize, maxBlockSize));
         }
 
-        // Создание мешей
-        await this._buildRoad(roadTexture, roadWidth, totalLength);
-        await this._buildSidewalks(sidewalkTexture, sidewalkWidth, totalLength);
-        await this._placeBuildings(buildingOffset, totalLength);
+        const zPositions = [0];
+        for (let i = 1; i < gridSizeZ; i++) {
+            zPositions.push(zPositions[i - 1] + this._randomRange(minBlockSize, maxBlockSize));
+        }
+
+        // Центрируем город вокруг (0, 0)
+        const centerX = xPositions[Math.floor(gridSizeX / 2)];
+        const centerZ = zPositions[Math.floor(gridSizeZ / 2)];
+        const xPos = xPositions.map(x => x - centerX);
+        const zPos = zPositions.map(z => z - centerZ);
+
+        // 2. Создание перекрёстков
+        for (let ix = 0; ix < gridSizeX; ix++) {
+            for (let iz = 0; iz < gridSizeZ; iz++) {
+                const intersection = {
+                    id: `int_${ix}_${iz}`,
+                    gridX: ix,
+                    gridZ: iz,
+                    x: xPos[ix],
+                    z: zPos[iz],
+                    hasTrafficLight: this._random() < trafficLightChance,
+                    // Какие дороги подключены (убираем рандомно некоторые для разнообразия)
+                    connectNorth: iz < gridSizeZ - 1,
+                    connectSouth: iz > 0,
+                    connectEast: ix < gridSizeX - 1,
+                    connectWest: ix > 0,
+                };
+
+                // Рандомно убираем некоторые соединения (но не все!) для разнообразия
+                if (this._random() < 0.15 && ix > 0 && ix < gridSizeX - 1) {
+                    if (this._random() > 0.5) intersection.connectEast = false;
+                    else intersection.connectWest = false;
+                }
+                if (this._random() < 0.15 && iz > 0 && iz < gridSizeZ - 1) {
+                    if (this._random() > 0.5) intersection.connectNorth = false;
+                    else intersection.connectSouth = false;
+                }
+
+                this._intersections.push(intersection);
+            }
+        }
+
+        // 3. Создание дорог между перекрёстками
+        // Горизонтальные дороги (по X)
+        for (let iz = 0; iz < gridSizeZ; iz++) {
+            for (let ix = 0; ix < gridSizeX - 1; ix++) {
+                const from = this._getIntersection(ix, iz);
+                const to = this._getIntersection(ix + 1, iz);
+                if (from.connectEast && to.connectWest) {
+                    this._roads.push({
+                        from: from,
+                        to: to,
+                        direction: 'horizontal',
+                        x1: from.x,
+                        x2: to.x,
+                        z: from.z,
+                        length: to.x - from.x,
+                    });
+                }
+            }
+        }
+
+        // Вертикальные дороги (по Z)
+        for (let ix = 0; ix < gridSizeX; ix++) {
+            for (let iz = 0; iz < gridSizeZ - 1; iz++) {
+                const from = this._getIntersection(ix, iz);
+                const to = this._getIntersection(ix, iz + 1);
+                if (from.connectNorth && to.connectSouth) {
+                    this._roads.push({
+                        from: from,
+                        to: to,
+                        direction: 'vertical',
+                        x: from.x,
+                        z1: from.z,
+                        z2: to.z,
+                        length: to.z - from.z,
+                    });
+                }
+            }
+        }
+
+        // 4. Построение мешей
+        const roadTexture = this._texturesPath + 'T_Concrete_Asphalt_BaseColor.png';
+        const roadNormal = this._texturesPath + 'T_Concrete_Normal.png';
+        const sidewalkTexture = this._texturesPath + 'T_Concrete_BaseColor.png';
+
+        this._buildRoads(roadTexture, roadNormal, roadWidth);
+        this._buildIntersections(roadTexture, roadNormal, roadWidth);
+        this._buildSidewalks(sidewalkTexture, roadWidth);
         this._placeTrafficLights();
-        this._placeIntersectionMarkings();
+        this._placeRoadMarkings(roadWidth, lanes);
+        await this._placeBuildings(xPos, zPos, roadWidth);
+
+        // Освещение и атмосфера
+        this._setupLighting();
 
         return {
-            totalLength,
-            segmentCount: this._segments.length,
+            gridSizeX,
+            gridSizeZ,
+            intersectionCount: this._intersections.length,
+            roadCount: this._roads.length,
             trafficLightCount: this._trafficLights.length,
-            segments: this._segments,
+            bounds: {
+                minX: xPos[0] - 50,
+                maxX: xPos[gridSizeX - 1] + 50,
+                minZ: zPos[0] - 50,
+                maxZ: zPos[gridSizeZ - 1] + 50,
+            }
         };
     }
 
-    /**
-     * Создание дорожного полотна
-     */
-    async _buildRoad(texturePath, width, length) {
-        const road = BABYLON.MeshBuilder.CreateGround('road_main', {
-            width: width,
-            height: length
-        }, this._scene);
-
-        const mat = new BABYLON.StandardMaterial('roadMat', this._scene);
-        mat.diffuseTexture = new BABYLON.Texture(texturePath, this._scene);
-        mat.diffuseTexture.uScale = 2;
-        mat.diffuseTexture.vScale = length / 5;
-        mat.specularColor = new BABYLON.Color3(0.1, 0.1, 0.1);
-        road.material = mat;
-        road.position.z = length / 2;
-
-        // Разделительная полоса (жёлтая линия по центру)
-        const divider = BABYLON.MeshBuilder.CreateGround('divider', {
-            width: 0.15,
-            height: length
-        }, this._scene);
-        const divMat = new BABYLON.StandardMaterial('divMat', this._scene);
-        divMat.diffuseColor = new BABYLON.Color3(0.9, 0.8, 0.1);
-        divMat.emissiveColor = new BABYLON.Color3(0.2, 0.18, 0);
-        divider.material = divMat;
-        divider.position.y = 0.01;
-        divider.position.z = length / 2;
+    _getIntersection(ix, iz) {
+        return this._intersections.find(i => i.gridX === ix && i.gridZ === iz);
     }
 
     /**
-     * Создание тротуаров
+     * Построение дорожных сегментов
      */
-    async _buildSidewalks(texturePath, width, length) {
-        for (const side of [-1, 1]) {
-            const sw = BABYLON.MeshBuilder.CreateGround(`sidewalk_${side > 0 ? 'R' : 'L'}`, {
-                width: width,
-                height: length
-            }, this._scene);
+    _buildRoads(texturePath, normalPath, width) {
+        for (const road of this._roads) {
+            let roadMesh;
+            if (road.direction === 'horizontal') {
+                roadMesh = BABYLON.MeshBuilder.CreateGround(`road_h_${road.from.id}_${road.to.id}`, {
+                    width: road.length,
+                    height: width
+                }, this._scene);
+                roadMesh.position.x = (road.x1 + road.x2) / 2;
+                roadMesh.position.z = road.z;
+            } else {
+                roadMesh = BABYLON.MeshBuilder.CreateGround(`road_v_${road.from.id}_${road.to.id}`, {
+                    width: width,
+                    height: road.length
+                }, this._scene);
+                roadMesh.position.x = road.x;
+                roadMesh.position.z = (road.z1 + road.z2) / 2;
+            }
 
-            const mat = new BABYLON.StandardMaterial(`swMat_${side}`, this._scene);
+            const mat = new BABYLON.StandardMaterial(`roadMat_${road.from.id}`, this._scene);
             mat.diffuseTexture = new BABYLON.Texture(texturePath, this._scene);
-            mat.diffuseTexture.uScale = 4;
-            mat.diffuseTexture.vScale = length / 5;
-            mat.specularColor = new BABYLON.Color3(0.05, 0.05, 0.05);
-            sw.material = mat;
-            sw.position.x = side * 7;
-            sw.position.y = 0.05; // Чуть выше дороги
-            sw.position.z = length / 2;
+            mat.bumpTexture = new BABYLON.Texture(normalPath, this._scene);
+
+            const len = road.length;
+            if (road.direction === 'horizontal') {
+                mat.diffuseTexture.uScale = len / 5;
+                mat.diffuseTexture.vScale = 2;
+                mat.bumpTexture.uScale = len / 5;
+                mat.bumpTexture.vScale = 2;
+            } else {
+                mat.diffuseTexture.uScale = 2;
+                mat.diffuseTexture.vScale = len / 5;
+                mat.bumpTexture.uScale = 2;
+                mat.bumpTexture.vScale = len / 5;
+            }
+            mat.specularColor = new BABYLON.Color3(0.1, 0.1, 0.1);
+            roadMesh.material = mat;
         }
     }
 
     /**
-     * Размещение зданий с рандомизацией
+     * Построение площадок перекрёстков
      */
-    async _placeBuildings(offset, totalLength) {
-        // Загрузка разных моделей зданий
+    _buildIntersections(texturePath, normalPath, width) {
+        for (const inter of this._intersections) {
+            const size = width + 4; // Чуть больше ширины дороги
+            const mesh = BABYLON.MeshBuilder.CreateGround(`intersection_${inter.id}`, {
+                width: size,
+                height: size
+            }, this._scene);
+            mesh.position.x = inter.x;
+            mesh.position.z = inter.z;
+            mesh.position.y = 0.001; // Чуть выше чтобы не z-fight
+
+            const mat = new BABYLON.StandardMaterial(`intMat_${inter.id}`, this._scene);
+            mat.diffuseTexture = new BABYLON.Texture(texturePath, this._scene);
+            mat.diffuseTexture.uScale = 2;
+            mat.diffuseTexture.vScale = 2;
+            mat.specularColor = new BABYLON.Color3(0.1, 0.1, 0.1);
+            mesh.material = mat;
+        }
+    }
+
+    /**
+     * Тротуары вдоль дорог
+     */
+    _buildSidewalks(texturePath, roadWidth) {
+        const swWidth = 3;
+        const halfRoad = roadWidth / 2;
+
+        for (const road of this._roads) {
+            for (const side of [-1, 1]) {
+                let sw;
+                if (road.direction === 'horizontal') {
+                    sw = BABYLON.MeshBuilder.CreateGround(`sw_${road.from.id}_${side}`, {
+                        width: road.length,
+                        height: swWidth
+                    }, this._scene);
+                    sw.position.x = (road.x1 + road.x2) / 2;
+                    sw.position.z = road.z + side * (halfRoad + swWidth / 2);
+                } else {
+                    sw = BABYLON.MeshBuilder.CreateGround(`sw_${road.from.id}_${side}v`, {
+                        width: swWidth,
+                        height: road.length
+                    }, this._scene);
+                    sw.position.x = road.x + side * (halfRoad + swWidth / 2);
+                    sw.position.z = (road.z1 + road.z2) / 2;
+                }
+                sw.position.y = 0.08;
+
+                const mat = new BABYLON.StandardMaterial(`swMat_${road.from.id}_${side}`, this._scene);
+                mat.diffuseTexture = new BABYLON.Texture(texturePath, this._scene);
+                const len = road.length;
+                if (road.direction === 'horizontal') {
+                    mat.diffuseTexture.uScale = len / 4;
+                    mat.diffuseTexture.vScale = 1;
+                } else {
+                    mat.diffuseTexture.uScale = 1;
+                    mat.diffuseTexture.vScale = len / 4;
+                }
+                mat.specularColor = new BABYLON.Color3(0.05, 0.05, 0.05);
+                sw.material = mat;
+            }
+        }
+    }
+
+    /**
+     * Светофоры на перекрёстках
+     */
+    _placeTrafficLights() {
+        for (const inter of this._intersections) {
+            if (!inter.hasTrafficLight) continue;
+
+            // Ставим светофоры по углам перекрёстка
+            const positions = [
+                { x: inter.x + 5.5, z: inter.z + 5.5 },
+                { x: inter.x - 5.5, z: inter.z - 5.5 },
+            ];
+
+            for (const pos of positions) {
+                const tl = this._createTrafficLight(`tl_${inter.id}_${pos.x}`, pos.x, pos.z);
+                this._trafficLights.push(tl);
+            }
+        }
+    }
+
+    /**
+     * Создание светофора из примитивов
+     */
+    _createTrafficLight(name, x, z) {
+        const pole = BABYLON.MeshBuilder.CreateCylinder(`${name}_pole`, {
+            height: 5, diameter: 0.12
+        }, this._scene);
+        pole.position = new BABYLON.Vector3(x, 2.5, z);
+        const poleMat = new BABYLON.StandardMaterial(`${name}_pm`, this._scene);
+        poleMat.diffuseColor = new BABYLON.Color3(0.25, 0.25, 0.25);
+        pole.material = poleMat;
+
+        const body = BABYLON.MeshBuilder.CreateBox(`${name}_body`, {
+            width: 0.4, height: 1.2, depth: 0.3
+        }, this._scene);
+        body.position = new BABYLON.Vector3(x, 5.3, z);
+        const bodyMat = new BABYLON.StandardMaterial(`${name}_bm`, this._scene);
+        bodyMat.diffuseColor = new BABYLON.Color3(0.1, 0.1, 0.1);
+        body.material = bodyMat;
+
+        const lightConfigs = [
+            { color: new BABYLON.Color3(1, 0.1, 0.1), y: 5.65 },
+            { color: new BABYLON.Color3(1, 0.85, 0), y: 5.3 },
+            { color: new BABYLON.Color3(0.1, 1, 0.1), y: 4.95 },
+        ];
+
+        const activeIdx = Math.floor(this._random() * 3);
+        const lights = lightConfigs.map((cfg, i) => {
+            const l = BABYLON.MeshBuilder.CreateSphere(`${name}_l${i}`, { diameter: 0.18 }, this._scene);
+            l.position = new BABYLON.Vector3(x, cfg.y, z + 0.16);
+            const m = new BABYLON.StandardMaterial(`${name}_lm${i}`, this._scene);
+            if (i === activeIdx) {
+                m.diffuseColor = cfg.color;
+                m.emissiveColor = cfg.color.scale(0.4);
+            } else {
+                m.diffuseColor = new BABYLON.Color3(0.08, 0.08, 0.08);
+            }
+            l.material = m;
+            return l;
+        });
+
+        return { pole, body, lights, x, z, activeIdx };
+    }
+
+    /**
+     * Дорожная разметка (полосы)
+     */
+    _placeRoadMarkings(roadWidth, lanes) {
+        for (const road of this._roads) {
+            // Пунктирная разделительная линия
+            const dashLength = 3;
+            const gapLength = 4;
+            const totalLength = road.length;
+            let pos = 5;
+
+            while (pos < totalLength - 5) {
+                const dash = BABYLON.MeshBuilder.CreateGround(`dash_${road.from.id}_${pos}`, {
+                    width: road.direction === 'horizontal' ? dashLength : 0.12,
+                    height: road.direction === 'horizontal' ? 0.12 : dashLength
+                }, this._scene);
+
+                if (road.direction === 'horizontal') {
+                    dash.position.x = road.x1 + pos;
+                    dash.position.z = road.z;
+                } else {
+                    dash.position.x = road.x;
+                    dash.position.z = road.z1 + pos;
+                }
+                dash.position.y = 0.02;
+
+                const mat = new BABYLON.StandardMaterial(`dashMat_${pos}`, this._scene);
+                mat.diffuseColor = new BABYLON.Color3(0.95, 0.95, 0.95);
+                mat.emissiveColor = new BABYLON.Color3(0.1, 0.1, 0.1);
+                dash.material = mat;
+
+                pos += dashLength + gapLength;
+            }
+        }
+    }
+
+    /**
+     * Размещение зданий в блоках между улицами
+     */
+    async _placeBuildings(xPositions, zPositions, roadWidth) {
         const buildingFiles = ['Building_Small_1.gltf', 'Building_Medium_2_001.gltf', 'Building_Large_2.gltf'];
         const loadedBuildings = [];
 
         for (const file of buildingFiles) {
             try {
-                const result = await BABYLON.SceneLoader.ImportMeshAsync(
-                    '', this._modelsPath, file, this._scene
-                );
+                const result = await BABYLON.SceneLoader.ImportMeshAsync('', this._modelsPath, file, this._scene);
                 const mesh = result.meshes[0];
                 mesh.setEnabled(false);
                 loadedBuildings.push(mesh);
@@ -166,184 +400,94 @@ export class CityGenerator {
 
         if (loadedBuildings.length === 0) return;
 
-        // Размещение зданий вдоль дороги с рандомным интервалом и типом
-        const minSpacing = 25;
-        const maxSpacing = 60;
+        const margin = roadWidth / 2 + 5; // Отступ от центра дороги
 
-        for (const side of [-1, 1]) {
-            let z = 20;
-            let buildingIdx = 0;
+        // Размещаем здания в каждом блоке (между 4 перекрёстками)
+        for (let ix = 0; ix < xPositions.length - 1; ix++) {
+            for (let iz = 0; iz < zPositions.length - 1; iz++) {
+                const blockMinX = xPositions[ix] + margin;
+                const blockMaxX = xPositions[ix + 1] - margin;
+                const blockMinZ = zPositions[iz] + margin;
+                const blockMaxZ = zPositions[iz + 1] - margin;
 
-            while (z < totalLength - 20) {
-                const spacing = minSpacing + this._random() * (maxSpacing - minSpacing);
-                const buildingType = Math.floor(this._random() * loadedBuildings.length);
-                const building = loadedBuildings[buildingType];
+                if (blockMaxX - blockMinX < 15 || blockMaxZ - blockMinZ < 15) continue;
 
-                const clone = building.clone(`building_${side}_${buildingIdx}`);
-                clone.setEnabled(true);
+                // Размещаем 2-6 зданий в блоке
+                const buildingCount = this._randomInt(2, 5);
+                for (let b = 0; b < buildingCount; b++) {
+                    const bType = Math.floor(this._random() * loadedBuildings.length);
+                    const clone = loadedBuildings[bType].clone(`bld_${ix}_${iz}_${b}`);
+                    clone.setEnabled(true);
 
-                // Рандомное смещение от дороги
-                const xOffset = offset + this._random() * 5;
-                clone.position = new BABYLON.Vector3(
-                    side * xOffset,
-                    0,
-                    z
-                );
+                    const bx = this._randomRange(blockMinX, blockMaxX);
+                    const bz = this._randomRange(blockMinZ, blockMaxZ);
+                    clone.position = new BABYLON.Vector3(bx, 0, bz);
 
-                // Рандомный поворот (лицом к дороге + небольшое отклонение)
-                const baseRotation = side === 1 ? Math.PI : 0;
-                const randomRotation = (this._random() - 0.5) * 0.2;
-                clone.rotation = new BABYLON.Vector3(0, baseRotation + randomRotation, 0);
+                    const rot = Math.floor(this._random() * 4) * (Math.PI / 2);
+                    clone.rotation = new BABYLON.Vector3(0, rot, 0);
 
-                // Рандомный масштаб
-                const scale = 0.8 + this._random() * 0.5;
-                clone.scaling = new BABYLON.Vector3(scale, scale, scale);
+                    const scale = 0.7 + this._random() * 0.6;
+                    clone.scaling = new BABYLON.Vector3(scale, scale, scale);
 
-                this._buildings.push(clone);
-                z += spacing;
-                buildingIdx++;
+                    this._buildings.push(clone);
+                }
             }
         }
     }
 
     /**
-     * Размещение светофоров (из примитивов)
+     * Освещение и атмосфера
      */
-    _placeTrafficLights() {
-        for (const segment of this._segments) {
-            if (!segment.hasTrafficLight) continue;
+    _setupLighting() {
+        const scene = this._scene;
 
-            const z = segment.startZ + segment.length * 0.8;
+        const hemi = new BABYLON.HemisphericLight('hemiLight', new BABYLON.Vector3(0, 1, 0), scene);
+        hemi.intensity = 0.6;
+        hemi.groundColor = new BABYLON.Color3(0.3, 0.3, 0.35);
 
-            for (const side of [-1, 1]) {
-                const trafficLight = this._createTrafficLight(
-                    `tl_${segment.index}_${side}`,
-                    side * 5.5,
-                    z
-                );
-                this._trafficLights.push(trafficLight);
+        const dir = new BABYLON.DirectionalLight('dirLight', new BABYLON.Vector3(-0.5, -1, 0.5), scene);
+        dir.intensity = 0.7;
+        dir.diffuse = new BABYLON.Color3(1, 0.95, 0.85);
+
+        scene.clearColor = new BABYLON.Color4(0.55, 0.8, 0.95, 1);
+
+        // Туман
+        scene.fogMode = BABYLON.Scene.FOGMODE_LINEAR;
+        scene.fogColor = new BABYLON.Color3(0.55, 0.8, 0.95);
+        scene.fogStart = 200;
+        scene.fogEnd = 500;
+    }
+
+    /**
+     * Получить границы города для ограничения движения
+     */
+    getBounds() {
+        if (this._intersections.length === 0) return { minX: -500, maxX: 500, minZ: -500, maxZ: 500 };
+        const xs = this._intersections.map(i => i.x);
+        const zs = this._intersections.map(i => i.z);
+        return {
+            minX: Math.min(...xs) - 30,
+            maxX: Math.max(...xs) + 30,
+            minZ: Math.min(...zs) - 30,
+            maxZ: Math.max(...zs) + 30,
+        };
+    }
+
+    /**
+     * Получить ближайший перекрёсток к позиции
+     */
+    getNearestIntersection(x, z) {
+        let nearest = null;
+        let minDist = Infinity;
+        for (const inter of this._intersections) {
+            const dx = inter.x - x;
+            const dz = inter.z - z;
+            const dist = dx * dx + dz * dz;
+            if (dist < minDist) {
+                minDist = dist;
+                nearest = inter;
             }
         }
-    }
-
-    /**
-     * Создание светофора из примитивов
-     */
-    _createTrafficLight(name, x, z) {
-        // Столб
-        const pole = BABYLON.MeshBuilder.CreateCylinder(`${name}_pole`, {
-            height: 4,
-            diameter: 0.15
-        }, this._scene);
-        pole.position = new BABYLON.Vector3(x, 2, z);
-
-        const poleMat = new BABYLON.StandardMaterial(`${name}_poleMat`, this._scene);
-        poleMat.diffuseColor = new BABYLON.Color3(0.3, 0.3, 0.3);
-        pole.material = poleMat;
-
-        // Корпус светофора
-        const body = BABYLON.MeshBuilder.CreateBox(`${name}_body`, {
-            width: 0.4,
-            height: 1.0,
-            depth: 0.3
-        }, this._scene);
-        body.position = new BABYLON.Vector3(x, 4.2, z);
-
-        const bodyMat = new BABYLON.StandardMaterial(`${name}_bodyMat`, this._scene);
-        bodyMat.diffuseColor = new BABYLON.Color3(0.15, 0.15, 0.15);
-        body.material = bodyMat;
-
-        // Огни (красный, жёлтый, зелёный)
-        const colors = [
-            { color: new BABYLON.Color3(1, 0.1, 0.1), emissive: new BABYLON.Color3(0.5, 0, 0), y: 4.5 },
-            { color: new BABYLON.Color3(1, 0.8, 0), emissive: new BABYLON.Color3(0.3, 0.2, 0), y: 4.2 },
-            { color: new BABYLON.Color3(0.1, 1, 0.1), emissive: new BABYLON.Color3(0, 0.3, 0), y: 3.9 },
-        ];
-
-        // Рандомно выбираем какой горит
-        const activeLight = Math.floor(this._random() * 3);
-
-        const lights = colors.map((cfg, i) => {
-            const light = BABYLON.MeshBuilder.CreateSphere(`${name}_light_${i}`, {
-                diameter: 0.2
-            }, this._scene);
-            light.position = new BABYLON.Vector3(x, cfg.y, z + 0.16);
-
-            const mat = new BABYLON.StandardMaterial(`${name}_lightMat_${i}`, this._scene);
-            if (i === activeLight) {
-                mat.diffuseColor = cfg.color;
-                mat.emissiveColor = cfg.emissive;
-            } else {
-                mat.diffuseColor = new BABYLON.Color3(0.1, 0.1, 0.1);
-            }
-            light.material = mat;
-            return light;
-        });
-
-        return { pole, body, lights, position: { x, z }, activeLight };
-    }
-
-    /**
-     * Разметка перекрёстков (пешеходные переходы)
-     */
-    _placeIntersectionMarkings() {
-        for (const segment of this._segments) {
-            if (segment.type !== 'intersection') continue;
-
-            const z = segment.startZ + segment.length * 0.5;
-
-            // Пешеходный переход (белые полосы)
-            for (let i = 0; i < 6; i++) {
-                const stripe = BABYLON.MeshBuilder.CreateGround(`crosswalk_${segment.index}_${i}`, {
-                    width: 0.5,
-                    height: 3
-                }, this._scene);
-
-                const mat = new BABYLON.StandardMaterial(`cwMat_${segment.index}_${i}`, this._scene);
-                mat.diffuseColor = new BABYLON.Color3(0.95, 0.95, 0.95);
-                mat.emissiveColor = new BABYLON.Color3(0.1, 0.1, 0.1);
-                stripe.material = mat;
-
-                stripe.position = new BABYLON.Vector3(
-                    -2.5 + i * 1.0,
-                    0.02,
-                    z
-                );
-                stripe.rotation.y = Math.PI / 2;
-            }
-
-            // Стоп-линия
-            const stopLine = BABYLON.MeshBuilder.CreateGround(`stopline_${segment.index}`, {
-                width: 5,
-                height: 0.3
-            }, this._scene);
-            const slMat = new BABYLON.StandardMaterial(`slMat_${segment.index}`, this._scene);
-            slMat.diffuseColor = new BABYLON.Color3(0.95, 0.95, 0.95);
-            stopLine.material = slMat;
-            stopLine.position = new BABYLON.Vector3(0, 0.02, z - 5);
-        }
-    }
-
-    /**
-     * Получить сегменты для системы сценариев
-     */
-    getSegments() {
-        return this._segments;
-    }
-
-    /**
-     * Получить позиции светофоров
-     */
-    getTrafficLights() {
-        return this._trafficLights;
-    }
-
-    /**
-     * Общая длина маршрута
-     */
-    getTotalLength() {
-        if (this._segments.length === 0) return 0;
-        const last = this._segments[this._segments.length - 1];
-        return last.startZ + last.length;
+        return nearest;
     }
 }

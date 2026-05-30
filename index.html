@@ -78,31 +78,16 @@
             const uiOverlay = new UIOverlay('ui-overlay', EventBus);
             const deepseekAPI = new DeepseekAPI({ endpoint: '/api/evaluate', timeout: 30000 });
 
-            // Процедурная генерация города (10 км, рандомизация каждый запуск)
+            // Процедурная генерация города (сетка улиц, рандомизация каждый запуск)
             const cityGenerator = new CityGenerator(scene, './assets/models/', './assets/textures/');
-            const cityInfo = await cityGenerator.generate(10000, {
-                minSegmentLength: 80,
-                maxSegmentLength: 250,
-                turnChance: 0.2,
-                intersectionChance: 0.2,
+            const cityInfo = await cityGenerator.generate({
+                gridSizeX: 8,
+                gridSizeZ: 12,
+                minBlockSize: 80,
+                maxBlockSize: 150,
                 trafficLightChance: 0.5,
             });
-            console.log(`Город сгенерирован: ${cityInfo.segmentCount} сегментов, ${cityInfo.trafficLightCount} светофоров`);
-
-            // Освещение
-            const light = new BABYLON.HemisphericLight('light', new BABYLON.Vector3(0, 1, 0), scene);
-            light.intensity = 0.7;
-            const dirLight = new BABYLON.DirectionalLight('dirLight', new BABYLON.Vector3(-1, -2, 1), scene);
-            dirLight.intensity = 0.6;
-
-            // Небо
-            scene.clearColor = new BABYLON.Color4(0.53, 0.81, 0.92, 1);
-
-            // Туман для скрытия дальних объектов (оптимизация)
-            scene.fogMode = BABYLON.Scene.FOGMODE_LINEAR;
-            scene.fogColor = new BABYLON.Color3(0.53, 0.81, 0.92);
-            scene.fogStart = 150;
-            scene.fogEnd = 400;
+            console.log(`Город: ${cityInfo.intersectionCount} перекрёстков, ${cityInfo.roadCount} дорог, ${cityInfo.trafficLightCount} светофоров`);
 
             EventBus.emit('models:loaded');
 
@@ -169,8 +154,7 @@
             });
 
             // Игровой цикл
-            const ROAD_LENGTH = cityGenerator.getTotalLength();
-            const ROAD_HALF = ROAD_LENGTH / 2;
+            const bounds = cityGenerator.getBounds();
 
             engine.registerUpdateCallback((deltaTime) => {
                 const input = inputManager.getInput();
@@ -179,17 +163,11 @@
                 const carPosition = carPhysics.getPosition();
                 const carRotation = carPhysics.getRotation();
 
-                // Зацикливание дороги: если выехал за пределы — телепортируем обратно
-                if (carPosition.z > ROAD_LENGTH) {
-                    carPhysics.position.z -= ROAD_LENGTH;
-                } else if (carPosition.z < 0) {
-                    carPhysics.position.z += ROAD_LENGTH;
-                }
-                if (carPosition.x > 30) {
-                    carPhysics.position.x = 30;
-                } else if (carPosition.x < -30) {
-                    carPhysics.position.x = -30;
-                }
+                // Ограничение движения границами города
+                if (carPosition.x < bounds.minX) carPhysics.position.x = bounds.minX;
+                if (carPosition.x > bounds.maxX) carPhysics.position.x = bounds.maxX;
+                if (carPosition.z < bounds.minZ) carPhysics.position.z = bounds.minZ;
+                if (carPosition.z > bounds.maxZ) carPhysics.position.z = bounds.maxZ;
 
                 scenarioManager.update(carPhysics.getBoundingBox());
                 camera.update(carPhysics.getPosition(), carRotation);
