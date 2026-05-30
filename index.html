@@ -77,19 +77,49 @@
             const uiOverlay = new UIOverlay('ui-overlay', EventBus);
             const deepseekAPI = new DeepseekAPI({ endpoint: '/api/evaluate', timeout: 30000 });
 
-            // Загрузка моделей
+            // Загрузка текстур и создание окружения
             try {
-                await modelLoader.loadAll([
-                    { name: 'car', file: 'car.gltf' },
-                    { name: 'pedestrian', file: 'pedestrian.gltf' },
-                    { name: 'trafficLight', file: 'traffic-light.gltf' },
-                    { name: 'building', file: 'building.gltf' }
-                ], 30000);
-                EventBus.emit('models:loaded');
+                await modelLoader.loadTextures([
+                    { name: 'road', file: 'T_Concrete_Asphalt_BaseColor.png' },
+                    { name: 'sidewalk', file: 'T_Concrete_BaseColor.png' }
+                ]);
             } catch (error) {
-                console.error('Ошибка загрузки моделей:', error.message);
-                return;
+                console.warn('Текстуры не загружены, используем цвета:', error.message);
             }
+
+            // Создание дороги и тротуаров
+            const roadTexturePath = './assets/textures/T_Concrete_Asphalt_BaseColor.png';
+            const sidewalkTexturePath = './assets/textures/T_Concrete_BaseColor.png';
+            modelLoader.createRoadPlane(scene, roadTexturePath);
+
+            // Тротуары по бокам
+            const sidewalkLeft = modelLoader.createSidewalkPlane(scene, sidewalkTexturePath);
+            sidewalkLeft.position.x = -7;
+            const sidewalkRight = modelLoader.createSidewalkPlane(scene, sidewalkTexturePath);
+            sidewalkRight.position.x = 7;
+
+            // Размещение зданий (используем существующую модель)
+            try {
+                const buildingResult = await BABYLON.SceneLoader.ImportMeshAsync(
+                    '', './assets/models/', 'Building_Small_1.gltf', scene
+                );
+                const buildingMesh = buildingResult.meshes[0];
+                buildingMesh.setEnabled(false);
+                modelLoader.placeBuildings(buildingMesh, { roadLength: 500, buildingOffset: 15, buildingCount: 6 });
+            } catch (error) {
+                console.warn('Здания не загружены:', error.message);
+            }
+
+            // Освещение
+            const light = new BABYLON.HemisphericLight('light', new BABYLON.Vector3(0, 1, 0), scene);
+            light.intensity = 0.8;
+            const dirLight = new BABYLON.DirectionalLight('dirLight', new BABYLON.Vector3(-1, -2, 1), scene);
+            dirLight.intensity = 0.5;
+
+            // Небо
+            scene.clearColor = new BABYLON.Color4(0.53, 0.81, 0.92, 1);
+
+            EventBus.emit('models:loaded');
 
             // Регистрация сценариев
             scenarioManager.register(PedestrianScenario);
